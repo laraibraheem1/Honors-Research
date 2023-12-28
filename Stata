@@ -1,0 +1,241 @@
+####SMA####
+
+
+
+*this generates a time series without gaps
+*which is needed for using the tssmooth function to find the moving averages
+generate numeric_date= date(dummydate, "MD20Y")
+format %tdNN/DD/CCYY numeric_date
+
+*sets the time series dates for calculating moving average windows
+tsset numeric_date
+
+*calculates the 50 and 200 day moving averages
+tssmooth ma sma50 = stock_price, window(49 1 0)
+tssmooth ma sma200 = stock_price, window(199 1 0)
+
+*our signals: Golden (buy) and Death (sell) Cross 
+gen sma_buy=.
+replace sma_buy=1 if sma50>=sma200 
+replace sma_buy=0 if sma50<sma200 
+
+*this adjusts sma_buy to account for the fact that we need
+*to make initial moving average calculations
+*before our strategy can have enough data to generate dignals
+gen adj_sma_buy= sma_buy if [_n>200]
+
+*labels whether our signal is on or off
+label define sma_label 1 "TRUE" 0 "FALSE" 
+label values adj_sma_buy sma_label
+
+*returns: we take the risk free rate if we’re not in a position 
+*we take the daily stock return (adjusted for any dividends or stock splits)
+*when our signal is on
+gen sma_return=.
+replace sma_return = stock_return if adj_sma_buy== 1
+replace sma_return = rf_rate if adj_sma_buy== 0
+
+*generates a variable to tell us how many times we’ve entered a position
+gen transition = adj_sma_buy- adj_sma_buy[_n-1]
+label define transition_label -1 "Leave Position" 0 "Same Position" 1 "Enter Position"
+label values transition transition_label
+
+drop if _n>5031
+
+*summarize results 
+*for the days possible (n>200 since that is our calculation period)
+
+*the amount of times we entered a position
+tabulate transition
+* benchmark #1: average stock return in this sample period
+summarize stock_return if _n>200
+*benchmark #2: average stock return when the signal is off
+summarize stock_return if adj_sma_buy==0 & _n>200
+*check trading strategy performane
+summarize stock_return if adj_sma_buy==1 & _n>200
+
+*check how many days we are in a position for 
+tabulate adj_sma_buy 
+
+*benchmark #3: average rf rate in sample period
+summarize rf_rate if _n>200
+
+*our overall return with the risk-free rate
+summarize sma_return if _n>200
+
+
+##BOLLINGER BANDS##
+*format the correct dates without gaps for calculations
+generate numeric_date= date(dummydate, "MD20Y")
+format %tdNN/DD/CCYY numeric_date
+
+*set the time series dates for our calculations
+tsset numeric_date
+
+*this is the typical price formula
+*typical price is the parameter of focus in this strategy
+gen tp=(high+low+stock_price)/3
+
+*CALCULATING VARIENCE COMPONENTS
+*E(X) with x= tp
+tssmooth ma ma_tp= tp, window(19 1 0)
+*(X^2)
+gen tp_squared=  tp^2 
+*E(X^2)= the first component
+tssmooth ma ma_tp_squared =tp_squared, window(19 1 0)
+*E(X) is ma_tp
+*E(X)^2 = the second component
+gen sq_expectation_tp= ma_tp^2
+
+*varience formula
+gen var_tp=  ma_tp_squared- sq_expectation_tp
+
+*sd, stata divides by n 
+gen sd= sqrt(var_tp)
+
+*moving avg of sd
+tssmooth ma ma_sd= sd, window(19 1 0)
+
+*calculate bollinger bands
+gen upper_bollinger= ma_tp+ (2*ma_sd)
+gen lower_bollinger = ma_tp - (2*ma_sd)
+
+* generate signals
+gen bollinger_buy= .
+replace bollinger_buy=1 if stock_price<=lower_bollinger
+replace bollinger_buy=0 if stock_price>=upper_bollinger
+* this is so that we buy when it hits the lower band and sell when we hit the upper band
+*ensures we are not ignoring the area between the 2 bands
+*it takes 57 observations to generate the calculations to begin the strategy
+gen adj_bollinger_buy= bollinger_buy if [_n>57]
+
+*if the values after n=57 and before the first 1 are missing, replace them with 0 
+gen obs_count = _n
+egen first_1 = min(cond(adj_bollinger_buy == 1, obs_count, .))
+replace adj_bollinger_buy= 0 if obs_count > 57 & obs_count <= first_1 & n > 57 &missing(adj_bollinger_buy)
+
+*replace the rest of the missing variables with their leading nonmissing variables
+replace  adj_bollinger_buy=  adj_bollinger_buy[_n-1] if missing(adj_bollinger_buy) & _n>57
+
+*label when our signals are on or off
+label define bollinger_label 1 "TRUE" 0 "FALSE" 
+label values bollinger_buy bollinger_label
+label values adj_bollinger_buy bollinger_label
+
+*calculate returns with the risk free rate
+gen bollinger_return=. 
+replace bollinger_return = stock_return if adj_bollinger_buy== 1
+replace bollinger_return = rf_rate if adj_bollinger_buy== 0
+
+*mark when we enter and exit positions
+gen transition = adj_bollinger_buy- adj_bollinger_buy[_n-1]
+label define transition_label 1 "Enter Position" 0 "Same Position” -1 “Exit”
+label values transition transition_label
+
+*summarize results 
+*for the days possible (n>57 since that is our calculation period)
+
+*the amount of times we entered a position
+tabulate transition
+
+* benchmark #1: average stock return in this sample period
+summarize stock_return if _n>57
+
+*benchmark #2: average stock return when the signal is off
+summarize stock_return if adj_bollinger_buy==0 & _n>57
+
+*check trading strategy performane
+summarize stock_return if adj_bollinger_buy==1 & _n>57
+
+*check how many days we are in a position for 
+tabulate adj_bollinger_buy
+
+*benchmark #3: average rf rate in sample period
+summarize rf_rate if _n>57
+
+*our overall return with the risk-free rate
+summarize bollinger_return if _n>57
+
+
+###RSI STRATEGY###
+*generate times series dates without gaps
+generate numeric_date= date(dummydate, "MD20Y")
+format %tdNN/DD/CCYY numeric_date
+tsset numeric_date
+
+*Formula components for relative strength 
+gen price_diff = stock_price - stock_price[_n-1]
+gen gains= .
+replace gains=price_diff if price_diff>=0
+replace gains = 0 if missing(gains)
+gen loss=.
+replace loss=price_diff if price_diff<0
+replace loss= 0 if missing(loss)
+gen abs_loss=  abs(loss)
+*price losses are counted as 0 in average gain. 
+*price increases are counted as 0 in average loss
+tssmooth ma avg_gain= gain, window(13 1 0)
+tssmooth ma avg_loss= abs_loss, window(13 1 0)
+*calculate relative strength
+gen rs= avg_gain/avg_loss
+
+*step 1 of calculating rsi
+gen rsi_one=100- (100/(1+rs))
+*step 2 is broken into 2 parts because of the formula length
+gen rsi_two= ((avg_gain[_n-1]*13)+avg_gain)/((avg_los[_n-1]*13)+avg_loss)
+gen rsi_three= 100-(100/(1+rsi_two))
+
+*generate the rsi signal
+gen rsi_buy= .
+replace rsi_buy=1 if rsi_three<=30
+replace rsi_buy=0 if rsi_three>=70
+* adjust for initial info needed (15 observations of data for calculations)
+gen adj_rsi_buy= rsi_buy if [_n>15]
+*set any gaps in the starting points when n>15 and less than the first value 1 equal to 0
+gen obs_count = _n
+egen first_1 = min(cond(adj_rsi_buy == 1, obs_count, .))
+replace adj_rsi_buy= 0 if obs_count > 15 & obs_count <= first_1 & n > 15 & missing(rsi_buy)
+
+*this ensures that we buy when price hits rsi<=30 and sell when rsi >=70
+replace  adj_rsi_buy=  adj_rsi_buy[_n-1] if missing(adj_rsi_buy) & _n>15
+
+
+
+*label our signals
+label define rsi_label 1 "TRUE" 0 "FALSE" 
+label values adj_rsi_buy rsi_label
+
+*generate returns with the risk-free rate
+gen rsi_return=. 
+replace rsi_return = stock_return if adj_rsi_buy== 1
+replace rsi_return = rf_rate if adj_rsi_buy== 0
+
+*mark when we enter and exit positions
+gen transition = adj_rsi_buy- adj_rsi_buy[_n-1]
+label define transition_label 1 "Enter Position" 0 "Same Position” -1 “Exit”
+label values transition transition_label
+
+*summarize results 
+*for the days possible (n>15 since that is our calculation period)
+
+*mark the amount of times we entered a position
+tabulate transition
+
+* benchmark #1: average stock return in this sample period
+summarize stock_return if _n>15
+
+*benchmark #2: average stock return when the signal is off
+summarize stock_return if adj_rsi_buy==0 & _n>15
+
+*check trading strategy performane
+summarize stock_return if adj_rsi_buy==1 & _n>15
+
+*check how many days we are in a position for 
+tabulate adj_rsi_buy
+
+*benchmark #3: average rf rate in sample period
+summarize rf_rate if _n>15
+
+*our overall return with the risk-free rate
+summarize rsi_return if _n>15
+
